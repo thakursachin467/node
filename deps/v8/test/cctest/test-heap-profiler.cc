@@ -34,7 +34,7 @@
 #include "src/v8.h"
 
 #include "include/v8-profiler.h"
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/assembler-inl.h"
 #include "src/base/hashmap.h"
 #include "src/collector.h"
@@ -361,7 +361,7 @@ TEST(HeapSnapshotCodeObjects) {
 
   CompileRun(
       "function lazy(x) { return x - 1; }\n"
-      "function compiled(x) { return x + 1; }\n"
+      "function compiled(x) { ()=>x; return x + 1; }\n"
       "var anonymous = (function() { return function() { return 0; } })();\n"
       "compiled(1)");
   const v8::HeapSnapshot* snapshot = heap_profiler->TakeHeapSnapshot();
@@ -2134,6 +2134,35 @@ TEST(AccessorInfo) {
   CHECK(setter);
 }
 
+TEST(JSGeneratorObject) {
+  v8::Isolate* isolate = CcTest::isolate();
+  LocalContext env;
+  v8::HandleScope scope(isolate);
+  v8::HeapProfiler* heap_profiler = isolate->GetHeapProfiler();
+
+  CompileRun(
+      "function* foo() { yield 1; }\n"
+      "g = foo();\n");
+  const v8::HeapSnapshot* snapshot = heap_profiler->TakeHeapSnapshot();
+  CHECK(ValidateSnapshot(snapshot));
+  const v8::HeapGraphNode* global = GetGlobalObject(snapshot);
+  const v8::HeapGraphNode* g =
+      GetProperty(isolate, global, v8::HeapGraphEdge::kProperty, "g");
+  CHECK(g);
+  const v8::HeapGraphNode* function = GetProperty(
+      env->GetIsolate(), g, v8::HeapGraphEdge::kInternal, "function");
+  CHECK(function);
+  const v8::HeapGraphNode* context = GetProperty(
+      env->GetIsolate(), g, v8::HeapGraphEdge::kInternal, "context");
+  CHECK(context);
+  const v8::HeapGraphNode* receiver = GetProperty(
+      env->GetIsolate(), g, v8::HeapGraphEdge::kInternal, "receiver");
+  CHECK(receiver);
+  const v8::HeapGraphNode* parameters_and_registers =
+      GetProperty(env->GetIsolate(), g, v8::HeapGraphEdge::kInternal,
+                  "parameters_and_registers");
+  CHECK(parameters_and_registers);
+}
 
 bool HasWeakEdge(const v8::HeapGraphNode* node) {
   for (int i = 0; i < node->GetChildrenCount(); ++i) {
@@ -2200,31 +2229,6 @@ TEST(SfiAndJsFunctionWeakRefs) {
   const v8::HeapGraphNode* shared = GetProperty(
       env->GetIsolate(), fun, v8::HeapGraphEdge::kInternal, "shared");
   CHECK(!HasWeakEdge(shared));
-}
-
-
-TEST(NoDebugObjectInSnapshot) {
-  LocalContext env;
-  v8::HandleScope scope(env->GetIsolate());
-  v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
-
-  CHECK(CcTest::i_isolate()->debug()->Load());
-  CompileRun("foo = {};");
-  const v8::HeapSnapshot* snapshot = heap_profiler->TakeHeapSnapshot();
-  CHECK(ValidateSnapshot(snapshot));
-  const v8::HeapGraphNode* root = snapshot->GetRoot();
-  int globals_count = 0;
-  for (int i = 0; i < root->GetChildrenCount(); ++i) {
-    const v8::HeapGraphEdge* edge = root->GetChild(i);
-    if (edge->GetType() == v8::HeapGraphEdge::kShortcut) {
-      ++globals_count;
-      const v8::HeapGraphNode* global = edge->GetToNode();
-      const v8::HeapGraphNode* foo = GetProperty(
-          env->GetIsolate(), global, v8::HeapGraphEdge::kProperty, "foo");
-      CHECK(foo);
-    }
-  }
-  CHECK_EQ(1, globals_count);
 }
 
 
@@ -2459,12 +2463,8 @@ TEST(CheckCodeNames) {
   const v8::HeapSnapshot* snapshot = heap_profiler->TakeHeapSnapshot();
   CHECK(ValidateSnapshot(snapshot));
 
-  const char* stub_path[] = {
-    "::(GC roots)",
-    "::(Strong roots)",
-    "code_stubs::",
-    "::(ArraySingleArgumentConstructorStub code)"
-  };
+  const char* stub_path[] = {"::(GC roots)", "::(Strong roots)",
+                             "code_stubs::", "::(StoreFastElementStub code)"};
   const v8::HeapGraphNode* node = GetNodeByPath(
       env->GetIsolate(), snapshot, stub_path, arraysize(stub_path));
   CHECK(node);
@@ -2597,7 +2597,7 @@ TEST(TrackHeapAllocationsWithInlining) {
   const char* names[] = {"", "start", "f_0_0"};
   AllocationTraceNode* node = FindNode(tracker, ArrayVector(names));
   CHECK(node);
-  CHECK_GE(node->allocation_count(), 10u);
+  CHECK_GE(node->allocation_count(), 8u);
   CHECK_GE(node->allocation_size(), 4 * node->allocation_count());
   heap_profiler->StopTrackingHeapObjects();
 }
@@ -2995,7 +2995,7 @@ TEST(EmbedderGraph) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object())));
+          (isolate->context()->native_context()->global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   heap_profiler->AddBuildEmbedderGraphCallback(BuildEmbedderGraph, nullptr);
@@ -3125,7 +3125,7 @@ TEST(EmbedderGraphMultipleCallbacks) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object())));
+          (isolate->context()->native_context()->global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   GraphBuildingContext context;
@@ -3202,7 +3202,7 @@ TEST(EmbedderGraphWithWrapperNode) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object())));
+          (isolate->context()->native_context()->global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   heap_profiler->AddBuildEmbedderGraphCallback(
@@ -3259,7 +3259,7 @@ TEST(EmbedderGraphWithPrefix) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object())));
+          (isolate->context()->native_context()->global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   heap_profiler->AddBuildEmbedderGraphCallback(BuildEmbedderGraphWithPrefix,
@@ -3755,11 +3755,12 @@ TEST(WeakReference) {
 
   i::Handle<i::Object> obj = v8::Utils::OpenHandle(*script);
   i::Handle<i::SharedFunctionInfo> shared_function =
-      i::Handle<i::SharedFunctionInfo>(i::JSFunction::cast(*obj)->shared());
+      i::Handle<i::SharedFunctionInfo>(i::JSFunction::cast(*obj)->shared(),
+                                       i_isolate);
   i::Handle<i::FeedbackVector> fv = factory->NewFeedbackVector(shared_function);
 
   // Create a Code.
-  i::Assembler assm(i_isolate, nullptr, 0);
+  i::Assembler assm(i::AssemblerOptions{}, nullptr, 0);
   assm.nop();  // supported on all architectures
   i::CodeDesc desc;
   assm.GetCode(i_isolate, &desc);
