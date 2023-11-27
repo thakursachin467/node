@@ -11,8 +11,8 @@
   ],
   "dependencies": {
     "markdown-extensions": "^1.1.0",
-    "remark": "^8.0.0",
-    "unified-args": "^4.0.0"
+    "remark": "^13.0.0",
+    "unified-args": "^7.0.0"
   },
   "homepage": "http://remark.js.org",
   "repository": "https://github.com/wooorm/remark/tree/master/packages/remark-cli",
