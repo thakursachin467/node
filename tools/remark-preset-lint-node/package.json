@@ -18,7 +18,7 @@
   },
   "homepage": "https://github.com/watilde/remark-preset-lint-node#readme",
   "dependencies": {
-    "remark-lint": "^6.0.0",
+    "remark-lint": "^7.0.0",
     "remark-lint-blockquote-indentation": "^1.0.0",
     "remark-lint-checkbox-character-style": "^1.0.0",
     "remark-lint-checkbox-content-indent": "^1.0.0",
